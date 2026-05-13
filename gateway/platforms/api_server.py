@@ -804,6 +804,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        request_tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -855,6 +856,7 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            request_tools=request_tools,
         )
         return agent
 
@@ -987,6 +989,9 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+
+        # Extract tools parameter for function calling (OpenAI format)
+        request_tools = body.get("tools")
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -1167,6 +1172,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                request_tools=request_tools,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1186,6 +1192,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                request_tools=request_tools,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2350,6 +2357,39 @@ class APIServerAdapter(BasePlatformAdapter):
             "deleted": True,
         })
 
+
+    async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
+        """DELETE /v1/sessions/{session_id} — delete a session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info["session_id"]
+        
+        # Validate session_id format
+        if not session_id or len(session_id) > 64:
+            return web.json_response(
+                _openai_error("Invalid session ID"), status=400
+            )
+        
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(
+                _openai_error("Session database unavailable"), status=503
+            )
+        
+        deleted = db.delete_session(session_id)
+        if not deleted:
+            return web.json_response(
+                _openai_error(f"Session not found: {session_id}"), status=404
+            )
+        
+        return web.json_response({
+            "id": session_id,
+            "object": "session",
+            "deleted": True,
+        })
+
     # ------------------------------------------------------------------
     # Cron jobs API
     # ------------------------------------------------------------------
@@ -2690,6 +2730,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        request_tools: Optional[List[Dict[str, Any]]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2713,6 +2754,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                request_tools=request_tools,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -3350,6 +3392,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            self._app.router.add_delete("/v1/sessions/{session_id}", self._handle_delete_session)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

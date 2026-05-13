@@ -1133,6 +1133,7 @@ class AIAgent:
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
+        request_tools: List[Dict[str, Any]] = None,  # Direct tool definitions from API request
         save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,
@@ -1198,6 +1199,9 @@ class AIAgent:
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
+            request_tools (List[Dict]): Direct tool definitions in OpenAI format from API request.
+                When provided, these tools are used instead of loading toolsets. This allows
+                API clients (e.g., IntelliJ plugin) to specify custom tool definitions.
             save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
             verbose_logging (bool): Enable verbose logging for debugging (default: False)
             quiet_mode (bool): Suppress progress output for clean CLI experience (default: False)
@@ -1435,6 +1439,7 @@ class AIAgent:
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
+        self.request_tools = request_tools  # Direct tool definitions from API request
         
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
@@ -1834,11 +1839,18 @@ class AIAgent:
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
         # Get available tools with filtering
-        self.tools = get_tool_definitions(
-            enabled_toolsets=enabled_toolsets,
-            disabled_toolsets=disabled_toolsets,
-            quiet_mode=self.quiet_mode,
-        )
+        # If request_tools is provided (from API request), use those directly
+        # Otherwise, load tools from enabled/disabled toolsets
+        if request_tools is not None:
+            self.tools = request_tools
+            if not self.quiet_mode:
+                print(f"🛠️  Using {len(self.tools)} tools from API request: {', '.join(t.get('function', {}).get('name', 'unknown') for t in self.tools)}")
+        else:
+            self.tools = get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=self.quiet_mode,
+            )
         
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
